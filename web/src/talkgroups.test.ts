@@ -26,7 +26,7 @@ test("setting a talkgroup's Send To adds the column, changes only its cell, and 
 
 test("a talkgroup not in the file gets a row; every plugin on a file without the column changes nothing", () => {
   const added = withSendTo(file, 2047, ["openmhz"], "All call");
-  assert.ok(added.trimEnd().endsWith("2047,7ff,All call,,,,,openmhz"));
+  assert.ok(added.trimEnd().endsWith("2047,7ff,All call,D,,,,openmhz"), "as the recorder adds it (Mode D)");
   assert.equal(withSendTo(file, 801, undefined), file);
   assert.equal(withSendTo(file, 999, undefined), file);
   assert.deepEqual(sendToOf(withSendTo("", 5, ["openmhz"]), 5), ["openmhz"], "an empty file");

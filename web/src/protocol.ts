@@ -1728,6 +1728,8 @@ export interface TalkgroupEdit {
   category?: string;
   /** Never record it. */
   ignore?: boolean;
+  /** The plugins its calls go to (its Send To cell: "" every plugin, `none`, or the plugins joined by `;`). */
+  sendTo?: string;
 }
 
 export type FromRecorder =

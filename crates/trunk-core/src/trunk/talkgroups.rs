@@ -175,6 +175,7 @@ fn canonical(h: &str) -> String {
         "preferred site" => "Preferred Site",
         "ignore" => "Ignore",
         "comment" => "Comment",
+        "send to" | "sendto" => "Send To",
         _ => return h.trim().to_string(),
     }
     .to_string()
@@ -304,6 +305,8 @@ mod tests {
         let legacy = edit_row("202,ca,E,Police,Tac 2,Law,City\n", 202, &[("Alpha Tag", "PD Tac")]);
         assert_eq!(legacy, "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n202,ca,E,PD Tac,Tac 2,Law,City\n");
         assert_eq!(edit_row("", 7, &[("Ignore", "x")]), "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category,Ignore\n7,7,,D,,,,x\n");
+        // A Send To column spelled another way is that column.
+        assert_eq!(edit_row("Decimal,SendTo\n101,openmhz\n", 101, &[("Send To", "rdioscanner")]), "Decimal,SendTo\n101,rdioscanner\n");
     }
 
     #[test]

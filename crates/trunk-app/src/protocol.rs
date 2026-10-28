@@ -207,6 +207,9 @@ pub struct TalkgroupEdit {
     /// Never record it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ignore: Option<bool>,
+    /// The plugins its calls go to (its Send To cell: "" every plugin, `none`, or the plugins joined by `;`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_to: Option<String>,
 }
 
 impl TalkgroupEdit {
@@ -215,6 +218,7 @@ impl TalkgroupEdit {
         let text = [("Alpha Tag", &self.alpha_tag), ("Description", &self.description), ("Tag", &self.tag), ("Category", &self.category)];
         let mut cells: Vec<(&'static str, &str)> = text.into_iter().filter_map(|(c, v)| v.as_deref().map(|v| (c, v.trim()))).collect();
         cells.extend(self.ignore.map(|i| ("Ignore", if i { "x" } else { "" })));
+        cells.extend(self.send_to.as_deref().map(|v| ("Send To", v.trim())));
         cells
     }
 }

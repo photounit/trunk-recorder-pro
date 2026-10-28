@@ -592,6 +592,11 @@ pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::prot
     };
     ctx.shared.names.lock().unwrap().set_talkgroup(system, number, row.clone());
     ctx.tell_engine(EngineCmd::Talkgroup { short_name: system.to_string(), number, row });
+    if edit.send_to.is_some() {
+        // (Its Send To routes its calls from now on.)
+        let (cfg, files) = (ctx.config.lock().unwrap().clone(), ctx.talkgroups.lock().unwrap().clone());
+        ctx.plugins.set_routes(&cfg, &files);
+    }
     publish(&ctx.hub, ToClient::TalkgroupEdited { system: system.to_string(), talkgroup: number, edit });
     Ok(())
 }

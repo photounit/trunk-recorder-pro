@@ -82,6 +82,8 @@ const HEADER: Record<string, string> = {
   "preferred site": "Preferred Site",
   ignore: "Ignore",
   comment: "Comment",
+  "send to": "Send To",
+  sendto: "Send To",
 };
 const canonical = (h: string) => HEADER[h.trim().toLowerCase()] ?? h.trim();
 
@@ -346,6 +348,7 @@ export function editCells(e: TalkgroupEdit): [string, string][] {
   ];
   const cells = text.filter((c): c is [string, string] => c[1] !== undefined).map(([c, v]): [string, string] => [c, v.trim()]);
   if (e.ignore !== undefined) cells.push(["Ignore", e.ignore ? "x" : ""]);
+  if (e.sendTo !== undefined) cells.push(["Send To", e.sendTo.trim()]);
   return cells;
 }
 
@@ -449,52 +452,22 @@ export function sendToOf(csv: string, tg: number): string[] | undefined {
   return sendTos(csv).get(tg);
 }
 
+/** A Send To cell: "" for every plugin, `none`, or the plugins joined by `;`. */
+const sendToCell = (sendTo: string[] | undefined) => (sendTo === undefined ? "" : sendTo.length ? sendTo.join(";") : "none");
+
+/** The edit that sets talkgroup `tg`'s Send To: named `alphaTag` too when the file lacks it. */
+export function sendToEdit(csv: string, tg: number, sendTo: string[] | undefined, alphaTag = ""): TalkgroupEdit {
+  const cell = sendToCell(sendTo);
+  return cell && alphaTag && !parseTalkgroupCsv(csv).has(tg) ? { alphaTag, sendTo: cell } : { sendTo: cell };
+}
+
 /**
  * The talkgroup file with talkgroup `tg`'s Send To set (`undefined`: every
  * plugin, an empty cell; `[]`: `none`; else the plugins joined by `;`), in its
- * "Send To" column — added when the file has none (a headerless, legacy file
- * is given its header). Only that cell changes; a talkgroup not in the file
- * gets a row (named `alphaTag`) when it's sent anywhere but every plugin.
+ * "Send To" column ([`withCells`]). Set back to every plugin, a file without
+ * the column comes back as it is.
  */
 export function withSendTo(csv: string, tg: number, sendTo: string[] | undefined, alphaTag = ""): string {
-  const cell = sendTo === undefined ? "" : sendTo.length ? sendTo.join(";") : "none";
-  const lines = csv.split(/\r?\n/);
-  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-  const data = (l: string) => !!l.trim() && !l.trim().startsWith("#");
-  let hi = lines.findIndex(data);
-  let header: string[];
-  if (hi < 0) {
-    if (!cell) return csv;
-    header = ["Decimal", "Hex", "Alpha Tag", "Mode", "Description", "Tag", "Category"];
-    lines.push(header.join(","));
-    hi = lines.length - 1;
-  } else if (canonical(splitCsvLine(lines[hi])[0] ?? "") === "Decimal") {
-    header = splitCsvLine(lines[hi]);
-  } else {
-    if (!cell) return csv;
-    header = legacyHeader(lines.filter(data));
-    lines.splice(hi, 0, header.join(","));
-  }
-  let at = header.findIndex((h) => h.replace(/\s/g, "").toLowerCase() === "sendto");
-  if (at < 0) {
-    if (!cell) return csv;
-    header.push("Send To");
-    at = header.length - 1;
-    lines[hi] = header.map(csvCell).join(",");
-  }
-  let found = false;
-  for (let i = hi + 1; i < lines.length; i++) {
-    if (!data(lines[i])) continue;
-    const f = splitCsvLine(lines[i]);
-    if (Number.parseInt(f[0], 10) !== tg) continue;
-    found = true;
-    while (f.length < header.length) f.push("");
-    f[at] = cell;
-    lines[i] = f.map(csvCell).join(",");
-  }
-  if (!found && cell) {
-    const f = header.map((h, k) => (k === at ? cell : canonical(h) === "Decimal" ? String(tg) : canonical(h) === "Hex" ? tg.toString(16) : canonical(h) === "Alpha Tag" ? alphaTag : ""));
-    lines.push(f.map(csvCell).join(","));
-  }
-  return lines.join("\n") + "\n";
+  if (!sendToCell(sendTo) && !openFile(csv).cols.includes("Send To")) return csv;
+  return withCells(csv, tg, editCells(sendToEdit(csv, tg, sendTo, alphaTag)));
 }

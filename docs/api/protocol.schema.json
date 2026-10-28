@@ -7658,6 +7658,10 @@
         "ignore": {
           "type": "boolean",
           "description": "Never record it."
+        },
+        "sendTo": {
+          "type": "string",
+          "description": "The plugins its calls go to (its Send To cell: \"\" every plugin, `none`, or the plugins joined by `;`)."
         }
       },
       "additionalProperties": false,
