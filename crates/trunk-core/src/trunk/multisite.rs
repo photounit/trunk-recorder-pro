@@ -34,6 +34,14 @@ use super::engine::Event;
 use super::recorded::Recorded;
 
 
+/// Two sites' copies whose audio was on the air together for this share of
+/// the shorter one are one transmission: a talkgroup has one talker at a time (kit).
+pub const ONE_TALK_SHARE: f64 = 0.8;
+/// A late site's copy began at least this long before the other's audio ended...
+pub const LATE_JOIN_S: f64 = 0.5;
+/// ... and the two ended within this of each other.
+pub const ENDED_TOGETHER_S: f64 = 1.0;
+
 /// Grants for one call reach each site's control channel at nearly the same time.
 pub const TWIN_WINDOW_S: f64 = 3.0;
 /// A preferred site's copy is kept while it has this share of the best copy's clean audio.
@@ -124,14 +132,45 @@ impl Kept {
     /// control channel went on mentioning the channel afterwards, and whom
     /// it named then, is no part of it; nor which call each was grouped in
     /// (saved copies of other calls are weighed too: [`Recent`]).
+    ///
+    /// (kit) Or on the air with it ([`Kept::on_air_with`]), whatever each site named the
+    /// talker and however far apart they granted it: an EDACS network grants a second site
+    /// seconds after the first and names the talker by an ID of that site's.
     pub fn holds(&self, h: &Held) -> bool {
         let (a, b) = (&self.call, &h.call);
         let slack = if self.audio && h.audio.is_some() { AUDIO_SLACK_S } else { TWIN_WINDOW_S };
         let theirs = h.talkers();
         a.site != b.site
-            && (a.system, a.talkgroup, a.unit_to_unit) == (b.system, b.talkgroup, b.unit_to_unit)
-            && self.heard.holds_within(h.heard(), slack)
-            && (self.talkers.is_empty() || theirs.iter().all(|t| self.talkers.contains(t)))
+            && self.same_talkgroup(h)
+            && ((self.heard.holds_within(h.heard(), slack) && (self.talkers.is_empty() || theirs.iter().all(|t| self.talkers.contains(t))))
+                || self.on_air_with(h))
+            && self.clean_s >= h.clean_s() * PREFERRED_SHARE
+    }
+
+    fn same_talkgroup(&self, h: &Held) -> bool {
+        let (a, b) = (&self.call, &h.call);
+        (a.system, a.talkgroup, a.unit_to_unit) == (b.system, b.talkgroup, b.unit_to_unit)
+    }
+
+    /// (kit) `h`'s audio was on the air with this copy's: mostly together, or a late
+    /// site's that began while this one's speech went on and ended with it.
+    pub fn on_air_with(&self, h: &Held) -> bool {
+        let Some(b) = h.audio.filter(|_| self.audio) else { return false };
+        let ((a0, a1), (b0, b1)) = ((self.heard.start_s, self.heard.end_s), (b.start_s, b.end_s));
+        let shorter = (a1 - a0).min(b1 - b0);
+        let (e1, (l0, l1)) = if a0 <= b0 { (a1, (b0, b1)) } else { (b1, (a0, a1)) };
+        (shorter > 0.5 && a1.min(b1) - a0.max(b0) >= ONE_TALK_SHARE * shorter) || (l0 <= e1 - LATE_JOIN_S && (l1 - e1).abs() <= ENDED_TOGETHER_S)
+    }
+
+    /// (kit) On the same site, a second channel on the air with this one, carrying the
+    /// same talker (or none known on one): a stale or doubled grant's copy.
+    fn doubled_on_site(&self, h: &Held) -> bool {
+        let theirs = h.talkers();
+        self.call.site == h.call.site
+            && self.call.id != h.call.id
+            && self.same_talkgroup(h)
+            && (self.talkers.is_empty() || theirs.is_empty() || theirs.iter().any(|t| self.talkers.contains(t)))
+            && self.on_air_with(h)
             && self.clean_s >= h.clean_s() * PREFERRED_SHARE
     }
 }
@@ -150,7 +189,7 @@ impl Recent {
     pub fn holding(&mut self, h: &Held) -> Option<&Kept> {
         let start_s = h.heard().start_s;
         self.kept.retain(|k| k.heard.end_s > start_s - 2.0 * TWIN_WINDOW_S);
-        self.kept.iter().find(|k| k.holds(h))
+        self.kept.iter().find(|k| k.holds(h) || k.doubled_on_site(h))
     }
 
     pub fn push(&mut self, k: Kept) {
@@ -206,6 +245,18 @@ impl Held {
     /// Leave out what the saved call won't have ([`Recorded::trim`]).
     pub fn trim(&mut self, min_tx_s: f64) {
         self.rec.trim(&mut self.call.sources, min_tx_s);
+    }
+
+    /// (kit) A trunked analog copy's silent tail (a repeater's hang time) cut now, so
+    /// copies are weighed by the audio they'd be saved with ([`super::record::trim_tail`]).
+    pub fn trim_tail(&mut self) {
+        if self.call.voice.analog() && self.call.site.is_some() {
+            let cut = super::record::trim_tail(&mut self.rec.audio, crate::mbe::SAMPLE_RATE as usize, super::record::one_talker(&self.call));
+            self.call.last_audio_s -= cut;
+            if let Some(a) = self.audio.as_mut() {
+                a.end_s = (a.end_s - cut).max(a.start_s);
+            }
+        }
     }
 
     /// Seconds of audio decoded cleanly ([`Recorded::clean_s`]).
@@ -517,6 +568,42 @@ mod tests {
         assert!(!kept.holds(&copy(5, 1, 0.3, 12.0, &[7], 100)), "it went on after this one ended");
         assert!(!kept.holds(&copy(6, 1, 0.3, 5.1, &[9], 100)), "another talker");
         assert!(!kept.holds(&copy(7, 1, 0.3, 5.1, &[7], 120)), "it decoded more: a part this lost");
+    }
+
+    /// (kit) An EDACS network grants a second site seconds after the first, and names
+    /// the talker its own way: copies on the air together are one transmission;
+    /// a reply on another site, after the last speech, isn't.
+    #[test]
+    fn copies_on_the_air_together_are_one_transmission() {
+        let aired = |id, site: u16, start_s: f64, from: f64, to: f64, talker: u32| {
+            let mut rec = Recorded::new(InBandSpec::default());
+            let n = ((to - from) * 10.0).round() as usize;
+            for k in 0..n {
+                rec.tx.note(k * 800, from + k as f64 * 0.1);
+            }
+            rec.audio = vec![0.1; n * 800];
+            let call = Call { start_s, last_audio_s: to, sources: vec![CallSource { src: talker, ..Default::default() }], ..call(id, site, start_s) };
+            Held::new(call, rec, Default::default())
+        };
+        let kept = Kept::of(&aired(1, 0, 0.0, 0.5, 6.5, 3817));
+        assert!(kept.holds(&aired(2, 1, 2.4, 2.6, 6.6, 6292)), "granted 2.4 s later on its site, on the air with it");
+        assert!(!kept.holds(&aired(3, 1, 2.4, 7.0, 9.0, 6292)), "a reply: after the last speech");
+        assert!(!kept.holds(&aired(4, 1, 2.4, 5.5, 9.0, 6292)), "on the air together for only a part of it");
+        assert!(!kept.holds(&aired(5, 0, 1.0, 1.0, 6.0, 6292)), "the same site: another channel's call");
+        let short = Kept::of(&aired(6, 0, 0.0, 0.0, 1.4, 8762));
+        assert!(short.holds(&aired(7, 1, 0.8, 0.8, 1.9, 6292)), "joined late, ended together");
+        assert!(!short.holds(&aired(8, 1, 1.2, 1.6, 3.0, 6292)), "a quick reply: began after the speech");
+        // Not linked: the saved ones are compared too.
+        let mut recent = Recent::default();
+        recent.push(Kept::of(&aired(10, 0, 20.0, 20.0, 23.0, 3818)));
+        assert!(recent.holding(&aired(11, 1, 22.4, 20.1, 23.0, 3818)).is_some());
+        assert!(recent.holding(&aired(12, 1, 22.4, 23.5, 25.0, 3818)).is_none(), "a reply");
+        let o = aired(13, 1, 20.0, 20.1, 23.0, 3818);
+        let other_tg = Held { call: Call { talkgroup: 9, ..o.call.clone() }, ..o };
+        assert!(recent.holding(&other_tg).is_none(), "another talkgroup");
+        assert!(recent.holding(&aired(14, 0, 20.5, 20.6, 23.0, 3818)).is_some(), "the same site and talker, another channel");
+        assert!(recent.holding(&aired(15, 0, 20.5, 20.6, 23.0, 0)).is_some(), "no talker known on it");
+        assert!(recent.holding(&aired(16, 0, 20.5, 20.6, 23.0, 1515)).is_none(), "another talker on the same site: kept");
     }
 
     #[test]

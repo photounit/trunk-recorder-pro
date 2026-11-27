@@ -2580,6 +2580,7 @@ impl Core {
             let mut h = Held::new(call, r.rec, r.on);
             // Now, so copies of a multi-site call are ranked by the audio they'd be saved with.
             h.trim(self.systems.get(h.call.system as usize).map_or(0.0, |s| s.cfg.save.min_transmission_s));
+            h.trim_tail();
             h
         });
         // Its site's copies: every one, saved or not, with all it decoded.
